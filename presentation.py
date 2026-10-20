@@ -54,11 +54,11 @@ Produce a presentation about the TOPIC grounded in the SOURCE MATERIAL.
 Rules:
 - Only use facts found in the source material. Do not invent data, numbers, names, or whole sections.
 - Be specific: keep drug names, doses, numbers, and study authors/years from the source. No filler bullets.
-- Concise slide titles and 3-4 bullets per slide. Each bullet under 15 words.
+- Concise slide titles and 4-6 bullets per slide. Each bullet can be up to 25 words — include specific details, drug names, doses, and clinical facts.
 - CRITICAL: You MUST produce the exact number of slides requested. Never produce fewer. Each major section, drug, or concept in the source gets its own slide. Do NOT merge multiple drugs or topics into one slide if the requested count allows separate slides.
 - Follow the logical order of the source.
 - Image markers look like [IMAGE w3: description]. Set "image" to that id if it belongs on the slide, else empty string. One image per slide max, each id once only.
-- Keep notes to 1 short sentence.
+- Keep notes to 2-3 sentences with key clinical details.
 
 Return ONLY valid minified JSON:
 {"deck_title":"string","subtitle":"string","slides":[{"title":"string","bullets":["string"],"notes":"string","image":"string"}]}"""
@@ -73,7 +73,7 @@ def _call_groq(user_prompt: str, model: str, api_key: str) -> str:
         ],
         response_format={"type": "json_object"},
         temperature=0.2,
-        max_tokens=4096,
+        max_tokens=6000,
     )
     raw = (resp.choices[0].message.content or "").strip()
     if not raw:
