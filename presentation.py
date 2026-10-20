@@ -92,7 +92,7 @@ def generate_deck_groq(
     """Generate a deck using Groq's hosted LLMs with 3-key rotation."""
     user_prompt = (
         f"TOPIC: {topic}\n"
-        f"MAXIMUM NUMBER OF CONTENT SLIDES: {num_slides}\n\n"
+        f"NUMBER OF CONTENT SLIDES REQUIRED: {num_slides}. Produce EXACTLY {num_slides} slides. Do not produce fewer unless the source has less than 4 distinct topics.\n\n"
         f"SOURCE MATERIAL:\n{source_text}"
     )
 

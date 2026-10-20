@@ -41,7 +41,7 @@ OUTPUTS.mkdir(exist_ok=True)
 NAME_RE = re.compile(r"^[a-zA-Z0-9_\-\.]+$")
 
 # Keep the prompt under Groq free-tier token limits. Lower this if you see rate-limit errors.
-MAX_SOURCE_CHARS = int(os.environ.get("MAX_SOURCE_CHARS", "18000"))
+MAX_SOURCE_CHARS = int(os.environ.get("MAX_SOURCE_CHARS", "30000"))
 MAX_IMAGES = 40  # max candidate images collected per source
 
 HEADERS = {
