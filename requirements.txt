@@ -2,6 +2,7 @@ fastapi
 uvicorn[standard]
 groq
 python-dotenv
+python-multipart
 requests
 beautifulsoup4
 pypdf
