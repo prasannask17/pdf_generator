@@ -73,7 +73,7 @@ def _call_groq(user_prompt: str, model: str, api_key: str) -> str:
         ],
         response_format={"type": "json_object"},
         temperature=0.2,
-        max_tokens=900,
+        max_tokens=800,
     )
     raw = (resp.choices[0].message.content or "").strip()
     if not raw:

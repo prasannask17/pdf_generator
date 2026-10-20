@@ -424,7 +424,7 @@ async def generate(
             generate_deck_groq,
             source.text,
             topic,
-            max(3, min(num_slides, 30)),
+            max(3, min(num_slides, 20)),
             DEFAULT_MODEL,
             visible_ids,
         )
