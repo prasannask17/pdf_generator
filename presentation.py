@@ -53,25 +53,15 @@ Produce a presentation about the TOPIC grounded in the SOURCE MATERIAL.
 
 Rules:
 - Only use facts found in the source material. Do not invent data, numbers, names, or whole sections.
-- Be specific: keep the drug/product names, doses, durations, numbers, and study authors/years from the source. No generic filler bullets.
-- Concise slide titles and 3-5 bullets per slide. Each bullet under ~20 words.
-- The user gives an approximate number of content slides. Treat it as a MAXIMUM. If the source has less material, make fewer slides, but ALWAYS produce at least 4 content slides whenever the source has any relevant content. The "slides" array must never be empty. Never pad with generic topics the source does not cover.
+- Be specific: keep drug names, doses, numbers, and study authors/years from the source. No filler bullets.
+- Concise slide titles and 3-4 bullets per slide. Each bullet under 15 words.
+- The user gives an approximate number of content slides. Treat it as a MAXIMUM. Always produce at least 4 content slides. The "slides" array must never be empty.
 - Follow the logical order of the source.
-- The source may contain image markers like [IMAGE w3: description]. If a slide covers the part of the source where a marker appears and that image is a useful figure, diagram, table or photo, set "image" to that marker's id. Use each id at most once, at most one image per slide, and only ids that appear in the source. Otherwise set "image" to an empty string. Do not force images onto slides.
+- Image markers look like [IMAGE w3: description]. Set "image" to that id if it belongs on the slide, else empty string. One image per slide max, each id once only.
+- Keep notes to 1 short sentence.
 
-Return ONLY valid minified JSON matching this schema:
-{
-  "deck_title": "string",
-  "subtitle": "string",
-  "slides": [
-    {
-      "title": "string",
-      "bullets": ["string", "string"],
-      "notes": "2-4 sentences of speaker notes summarizing this slide",
-      "image": "image id or empty string"
-    }
-  ]
-}"""
+Return ONLY valid minified JSON:
+{"deck_title":"string","subtitle":"string","slides":[{"title":"string","bullets":["string"],"notes":"string","image":"string"}]}"""
 
 
 def _call_groq(user_prompt: str, model: str, api_key: str) -> str:
@@ -83,7 +73,7 @@ def _call_groq(user_prompt: str, model: str, api_key: str) -> str:
         ],
         response_format={"type": "json_object"},
         temperature=0.2,
-        max_tokens=4096,
+        max_tokens=900,
     )
     raw = (resp.choices[0].message.content or "").strip()
     if not raw:
