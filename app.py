@@ -302,7 +302,24 @@ def extract_url(url: str) -> Source:
     if parsed.scheme not in ("http", "https"):
         raise ValueError("Please provide a full http(s) URL.")
 
-    resp = requests.get(url, headers=HEADERS, timeout=30)
+    # For SlideShare, use a scraping-friendly headers set
+    is_slideshare = "slideshare.net" in parsed.netloc
+
+    fetch_headers = HEADERS.copy()
+    if is_slideshare:
+        fetch_headers.update({
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Upgrade-Insecure-Requests": "1",
+        })
+
+    resp = requests.get(url, headers=fetch_headers, timeout=30)
     resp.raise_for_status()
     final_url = resp.url
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -312,6 +329,22 @@ def extract_url(url: str) -> Source:
         if ss:
             ss.label = final_url
             return ss
+        # SlideShare blocked normal scraping — try extracting text directly from page
+        raw_text = soup.get_text(" ", strip=True)
+        # Look for slide content patterns
+        slide_texts = re.findall(r'\d+\s*/\s*\d+\s*(.*?)(?=\d+\s*/\s*\d+|$)', raw_text, re.DOTALL)
+        if slide_texts and len(" ".join(slide_texts)) > 500:
+            combined = "\n".join(t.strip() for t in slide_texts if t.strip())
+            return Source(text=combined, images={}, label=final_url)
+        # Last resort: use all meaningful text from the page
+        lines = [l.strip() for l in raw_text.split("\n") if len(l.strip()) > 40]
+        combined = "\n".join(lines)
+        if len(combined) > 600:
+            return Source(text=combined[:MAX_SOURCE_CHARS], images={}, label=final_url)
+        raise ValueError(
+            "SlideShare blocked this request. Please download the PDF from SlideShare and upload it, "
+            "or use the 'Paste Text' tab to paste the slide content."
+        )
 
     for tag in soup(["script", "style", "noscript", "iframe", "svg", "header", "footer", "nav"]):
         tag.decompose()
