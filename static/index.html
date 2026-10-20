@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Doc2PPT - Generate Presentations from Documents</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Doc2PPT</h1>
+            <p class="subtitle">Generate professional PowerPoint presentations from PDFs or web articles</p>
+        </header>
+
+        <main>
+            <form id="generate-form" class="card">
+                <div class="form-group">
+                    <label for="topic">Presentation Topic <span class="required">*</span></label>
+                    <input type="text" id="topic" name="topic" placeholder="e.g., Antibiotics in Periodontics, Solar System Overview" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="num_slides">Number of Slides</label>
+                    <input type="number" id="num_slides" name="num_slides" value="6" min="3" max="30">
+                </div>
+
+                <div class="form-group">
+                    <label>Source <span class="required">*</span></label>
+                    <div class="source-tabs">
+                        <button type="button" class="tab-btn active" data-tab="url">URL</button>
+                        <button type="button" class="tab-btn" data-tab="pdf">PDF Upload</button>
+                    </div>
+                    
+                    <div class="tab-content">
+                        <div id="url-tab" class="tab-pane active">
+                            <input type="url" id="url" name="url" placeholder="https://example.com/article">
+                            <small>Supported: Web articles, SlideShare, Wikipedia, etc.</small>
+                        </div>
+                        <div id="pdf-tab" class="tab-pane">
+                            <input type="file" id="pdf" name="pdf" accept=".pdf">
+                            <small>Max 10MB. Scanned/image-only PDFs not supported.</small>
+                        </div>
+                    </div>
+                </div>
+
+                <button type="submit" id="generate-btn" class="btn btn-primary">
+                    <span class="btn-text">Generate Presentation</span>
+                    <span class="btn-loader hidden"></span>
+                </button>
+
+                <div id="error-message" class="error-message hidden"></div>
+            </form>
+
+            <div id="result" class="card hidden">
+                <div class="result-header">
+                    <h2 id="deck-title"></h2>
+                    <p id="deck-subtitle"></p>
+                </div>
+                
+                <div class="result-meta">
+                    <span id="slide-count"></span>
+                    <span id="image-count"></span>
+                </div>
+
+                <div id="slides-preview" class="slides-preview"></div>
+
+                <div class="result-actions">
+                    <button id="download-btn" class="btn btn-primary">Download .pptx</button>
+                    <button id="new-btn" class="btn btn-secondary">Create Another</button>
+                </div>
+            </div>
+        </main>
+
+        <footer>
+            <p>Powered by Groq + FastAPI + python-pptx</p>
+        </footer>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
