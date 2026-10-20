@@ -55,7 +55,7 @@ Rules:
 - Only use facts found in the source material. Do not invent data, numbers, names, or whole sections.
 - Be specific: keep drug names, doses, numbers, and study authors/years from the source. No filler bullets.
 - Concise slide titles and 3-4 bullets per slide. Each bullet under 15 words.
-- The user gives an approximate number of content slides. Treat it as a MAXIMUM. Always produce at least 4 content slides. The "slides" array must never be empty.
+- CRITICAL: You MUST produce the exact number of slides requested. Never produce fewer. Each major section, drug, or concept in the source gets its own slide. Do NOT merge multiple drugs or topics into one slide if the requested count allows separate slides.
 - Follow the logical order of the source.
 - Image markers look like [IMAGE w3: description]. Set "image" to that id if it belongs on the slide, else empty string. One image per slide max, each id once only.
 - Keep notes to 1 short sentence.
@@ -92,7 +92,10 @@ def generate_deck_groq(
     """Generate a deck using Groq's hosted LLMs with 3-key rotation."""
     user_prompt = (
         f"TOPIC: {topic}\n"
-        f"NUMBER OF CONTENT SLIDES REQUIRED: {num_slides}. Produce EXACTLY {num_slides} slides. Do not produce fewer unless the source has less than 4 distinct topics.\n\n"
+        f"NUMBER OF CONTENT SLIDES REQUIRED: {num_slides}. "
+        f"You MUST produce EXACTLY {num_slides} slides. "
+        f"Cover all major sections in the source material — do not merge or skip topics. "
+        f"Each section of the source should become its own slide.\n\n"
         f"SOURCE MATERIAL:\n{source_text}"
     )
 
