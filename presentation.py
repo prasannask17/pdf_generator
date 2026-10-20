@@ -146,7 +146,11 @@ def generate_deck_groq(
         except json.JSONDecodeError as exc:
             last_exc = RuntimeError(f"Model returned invalid JSON: {exc}")
         except Exception as exc:
-            last_exc = RuntimeError(f"Groq call failed: {exc}")
+            err = str(exc)
+            if "json_validate_failed" in err or "Failed to generate JSON" in err:
+                last_exc = RuntimeError("Source content was too thin or blocked — the model could not generate slides. Please upload the PDF directly.")
+            else:
+                last_exc = RuntimeError(f"Groq call failed: {exc}")
 
     raise RuntimeError(f"All {len(valid_keys)} API keys failed. Last error: {last_exc}")
 

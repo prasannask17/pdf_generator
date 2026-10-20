@@ -409,11 +409,11 @@ async def generate(
         f"DEBUG source: {len(source.text)} chars, {len(source.images)} images, "
         f"head={source.text[:300]!r}"
     )
-    if len(source.text) < 300:
+    if len(source.text) < 600 or "couldn't load" in source.text.lower() or "client challenge" in source.text.lower():
         raise HTTPException(
             400,
-            "Could not extract enough text from this source. "
-            "Try the direct page URL instead of a share link, or upload the PDF.",
+            "Could not extract enough content from this URL. "
+            "SlideShare and similar sites block automated access — please download the PDF and upload it instead.",
         )
 
     # Only images whose marker survived trimming are visible to the model
