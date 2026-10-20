@@ -21,17 +21,6 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
         
         btn.classList.add('active');
         document.getElementById(`${btn.dataset.tab}-tab`).classList.add('active');
-        
-        const urlInput = document.getElementById('url');
-        const pdfInput = document.getElementById('pdf');
-        
-        if (btn.dataset.tab === 'url') {
-            urlInput.required = true;
-            pdfInput.required = false;
-        } else {
-            urlInput.required = false;
-            pdfInput.required = true;
-        }
     });
 });
 
@@ -40,20 +29,20 @@ form.addEventListener('submit', async (e) => {
     
     const topic = document.getElementById('topic').value.trim();
     const numSlides = document.getElementById('num_slides').value;
-    const isUrlTab = document.querySelector('.tab-btn.active').dataset.tab === 'url';
+    const activeTab = document.querySelector('.tab-btn.active').dataset.tab;
     
     if (!topic) {
         showError('Please enter a presentation topic');
         return;
     }
     
-    if (isUrlTab) {
+    if (activeTab === 'url') {
         const url = document.getElementById('url').value.trim();
         if (!url) {
             showError('Please enter a URL');
             return;
         }
-    } else {
+    } else if (activeTab === 'pdf') {
         const pdf = document.getElementById('pdf').files[0];
         if (!pdf) {
             showError('Please select a PDF file');
@@ -61,6 +50,12 @@ form.addEventListener('submit', async (e) => {
         }
         if (pdf.size > 10 * 1024 * 1024) {
             showError('PDF file must be under 10MB');
+            return;
+        }
+    } else if (activeTab === 'text') {
+        const text = document.getElementById('text').value.trim();
+        if (!text || text.length < 100) {
+            showError('Please paste at least 100 characters of content');
             return;
         }
     }
@@ -73,10 +68,12 @@ form.addEventListener('submit', async (e) => {
     formData.append('topic', topic);
     formData.append('num_slides', numSlides);
     
-    if (isUrlTab) {
+    if (activeTab === 'url') {
         formData.append('url', document.getElementById('url').value.trim());
-    } else {
+    } else if (activeTab === 'pdf') {
         formData.append('pdf', document.getElementById('pdf').files[0]);
+    } else if (activeTab === 'text') {
+        formData.append('text', document.getElementById('text').value.trim());
     }
     
     try {

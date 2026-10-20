@@ -30,16 +30,21 @@
                     <div class="source-tabs">
                         <button type="button" class="tab-btn active" data-tab="url">URL</button>
                         <button type="button" class="tab-btn" data-tab="pdf">PDF Upload</button>
+                        <button type="button" class="tab-btn" data-tab="text">Paste Text</button>
                     </div>
                     
                     <div class="tab-content">
                         <div id="url-tab" class="tab-pane active">
                             <input type="url" id="url" name="url" placeholder="https://example.com/article">
-                            <small>Supported: Web articles, SlideShare, Wikipedia, etc.</small>
+                            <small>Supported: Web articles, Wikipedia, etc. (SlideShare is blocked — use Paste Text instead)</small>
                         </div>
                         <div id="pdf-tab" class="tab-pane">
                             <input type="file" id="pdf" name="pdf" accept=".pdf">
                             <small>Max 10MB. Scanned/image-only PDFs not supported.</small>
+                        </div>
+                        <div id="text-tab" class="tab-pane">
+                            <textarea id="text" name="text" rows="10" placeholder="Paste your content here — slide text, article, notes, copied text from SlideShare..."></textarea>
+                            <small>Paste any text content directly. Great for SlideShare slides, copied articles, or your own notes.</small>
                         </div>
                     </div>
                 </div>

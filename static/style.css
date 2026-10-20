@@ -86,7 +86,8 @@ header h1 {
 input[type="text"],
 input[type="url"],
 input[type="number"],
-input[type="file"] {
+input[type="file"],
+textarea {
     width: 100%;
     padding: 0.75rem 1rem;
     border: 1px solid var(--border);
@@ -98,10 +99,17 @@ input[type="file"] {
 
 input[type="text"]:focus,
 input[type="url"]:focus,
-input[type="number"]:focus {
+input[type="number"]:focus,
+textarea:focus {
     outline: none;
     border-color: var(--primary);
     box-shadow: 0 0 0 3px var(--primary-light);
+}
+
+textarea {
+    resize: vertical;
+    font-family: inherit;
+    line-height: 1.5;
 }
 
 input[type="file"] {

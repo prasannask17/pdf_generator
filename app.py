@@ -386,6 +386,7 @@ async def generate(
     num_slides: int = Form(6),
     model: str = Form(""),  # accepted for frontend compatibility, ignored
     url: str = Form(""),
+    text: str = Form(""),
     pdf: UploadFile | None = File(None),
 ):
     topic = topic.strip()
@@ -397,13 +398,25 @@ async def generate(
     if pdf_bytes is not None and not pdf_bytes.strip():
         pdf_bytes = None
 
-    if pdf_bytes is None and not url.strip():
-        raise HTTPException(400, "Upload a PDF or provide a URL.")
+    text = text.strip()
 
-    try:
-        source = await run_in_threadpool(load_source, pdf_bytes, url, topic, pdf_name)
-    except Exception as exc:
-        raise HTTPException(400, f"Could not read source: {exc}") from exc
+    if pdf_bytes is None and not url.strip() and not text:
+        raise HTTPException(400, "Upload a PDF, provide a URL, or paste some text.")
+
+    # Text tab: skip scraping entirely, use pasted content directly
+    if text and pdf_bytes is None and not url.strip():
+        if len(text) < 100:
+            raise HTTPException(400, "Pasted text is too short. Please provide more content.")
+        source = Source(
+            text=_relevance_trim(text, topic),
+            images={},
+            label="pasted text",
+        )
+    else:
+        try:
+            source = await run_in_threadpool(load_source, pdf_bytes, url, topic, pdf_name)
+        except Exception as exc:
+            raise HTTPException(400, f"Could not read source: {exc}") from exc
 
     print(
         f"DEBUG source: {len(source.text)} chars, {len(source.images)} images, "
