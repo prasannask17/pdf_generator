@@ -48,8 +48,8 @@ form.addEventListener('submit', async (e) => {
             showError('Please select a PDF file');
             return;
         }
-        if (pdf.size > 10 * 1024 * 1024) {
-            showError('PDF file must be under 10MB');
+        if (pdf.size > 300 * 1024 * 1024) {
+            showError('PDF file must be under 300MB');
             return;
         }
     } else if (activeTab === 'text') {
