@@ -247,49 +247,34 @@ def extract_pdf(data: bytes) -> Source:
     reader = PdfReader(io.BytesIO(data))
     parts: list[str] = []
     images: dict[str, ImageRef] = {}
-    seen: set[str] = set()
     has_text = False
 
-    # Check page 1 for a full-page background image. If found, this is likely
-    # a slide-deck PDF where every page is a full-page image — skip all image
-    # extraction to avoid OOM on memory-limited hosts (Render free: 512MB).
-    skip_all_images = False
-    if reader.pages:
-        try:
-            first_page = reader.pages[0]
-            mb = first_page.mediabox
-            pw, ph = float(mb.width), float(mb.height)
-            for img in first_page.images:
-                if _is_background_image(img, pw, ph):
-                    skip_all_images = True
-                    print("DEBUG: full-page background detected, skipping all image extraction")
-                    break
-        except Exception:
-            pass
+    # NOTE: Image extraction is disabled by default. pypdf's page.images
+    # decompresses all embedded images into memory, which causes OOM and
+    # hangs on Render's 512MB free tier — especially for slide-deck PDFs
+    # where every page has a full-page background image. Most PDFs that
+    # users upload are text-based and don't need image extraction.
+    # To re-enable, set the env var EXTRACT_PDF_IMAGES=1.
+
+    extract_images = os.environ.get("EXTRACT_PDF_IMAGES", "0") == "1"
 
     for pno, page in enumerate(reader.pages, start=1):
         text = (page.extract_text() or "").strip()
         if text:
             has_text = True
 
-        # Get page dimensions for background-image detection
-        try:
-            mb = page.mediabox
-            page_w, page_h = float(mb.width), float(mb.height)
-        except Exception:
-            page_w, page_h = 0, 0
-
         tags: list[str] = []
-        if not skip_all_images and len(images) < MAX_IMAGES:
+        if extract_images and len(images) < MAX_IMAGES:
             try:
+                # Get page dimensions for background-image detection
+                mb = page.mediabox
+                page_w, page_h = float(mb.width), float(mb.height)
+
                 for img in page.images:
                     raw = img.data
                     digest = hashlib.md5(raw).hexdigest()
                     if digest in seen:  # logos / repeated images
                         continue
-                    # Skip full-page background images (e.g. slide-deck PDFs
-                    # where each page is a single full-page image with text
-                    # overlaid). These are not reference figures.
                     if _is_background_image(img, page_w, page_h):
                         continue
                     prepared = prepare_image(raw)
