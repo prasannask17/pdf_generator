@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
 import re
+import threading
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -43,6 +46,27 @@ NAME_RE = re.compile(r"^[a-zA-Z0-9_\-\.]+$")
 # Keep the prompt under Groq free-tier token limits. Lower this if you see rate-limit errors.
 MAX_SOURCE_CHARS = int(os.environ.get("MAX_SOURCE_CHARS", "30000"))
 MAX_IMAGES = 40  # max candidate images collected per source
+
+# ============================================================================
+# Background job state (avoids Render's 60s request timeout)
+# ============================================================================
+
+JOB_STATE: dict[str, dict] = {}
+JOB_LOCK = threading.Lock()
+JOB_ID_RE = re.compile(r"^[a-f0-9]{16}$")
+
+
+def _now() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _update_job(job_id: str, **changes) -> None:
+    with JOB_LOCK:
+        job = JOB_STATE.get(job_id)
+        if job is None:
+            return
+        job.update(changes)
+        job["updated_at"] = _now()
 
 HEADERS = {
     "User-Agent": (
@@ -563,8 +587,54 @@ def load_source(
 
 
 # ============================================================================
-# API Routes
+# API Routes — Background job pattern (avoids Render's 60s request timeout)
 # ============================================================================
+
+def _run_job(
+    job_id: str,
+    source_text: str,
+    source_images: dict,
+    source_label: str,
+    topic: str,
+    num_slides: int,
+) -> None:
+    """Background worker: generate deck, build PPTX, update job state."""
+    _update_job(job_id, status="running", stage="generating", message="Generating slides with AI…")
+    try:
+        visible_ids = set(re.findall(r"\[IMAGE (\w+):", source_text))
+        deck = generate_deck_groq(
+            source_text, topic, max(3, min(num_slides, 20)),
+            DEFAULT_MODEL, visible_ids,
+        )
+        deck.source = source_label
+        _update_job(job_id, stage="images", message="Attaching images…")
+        attach_images(deck, source_images)
+
+        _update_job(job_id, stage="building", message="Building PPTX file…")
+        pptx_bytes = build_pptx(deck)
+        slug = re.sub(r"[^a-z0-9]+", "_", deck.deck_title.lower()).strip("_")[:60] or "deck"
+        filename = f"{slug}_{datetime.now():%Y%m%d_%H%M%S}.pptx"
+        (OUTPUTS / filename).write_bytes(pptx_bytes)
+
+        result = {
+            "deck_title": deck.deck_title,
+            "subtitle": deck.subtitle,
+            "filename": filename,
+            "image_count": sum(1 for s in deck.slides if s.image),
+            "slides": [
+                {
+                    "title": s.title,
+                    "bullets": s.bullets,
+                    "notes": s.notes,
+                    "has_image": bool(s.image),
+                }
+                for s in deck.slides
+            ],
+        }
+        _update_job(job_id, status="done", stage="done", message="Finished", result=result)
+    except Exception as exc:
+        _update_job(job_id, status="error", stage="error", message="Failed", error=str(exc))
+
 
 @app.post("/api/generate")
 async def generate(
@@ -617,44 +687,39 @@ async def generate(
             "SlideShare and similar sites block automated access — please download the PDF and upload it instead.",
         )
 
-    # Only images whose marker survived trimming are visible to the model
-    visible_ids = set(re.findall(r"\[IMAGE (\w+):", source.text))
+    # Create a background job — returns immediately so Render doesn't time out
+    job_id = uuid.uuid4().hex[:16]
+    with JOB_LOCK:
+        JOB_STATE[job_id] = {
+            "id": job_id,
+            "status": "queued",
+            "stage": "queued",
+            "message": "Queued",
+            "error": None,
+            "result": None,
+            "created_at": _now(),
+            "updated_at": _now(),
+        }
 
-    try:
-        deck = await run_in_threadpool(
-            generate_deck_groq,
-            source.text,
-            topic,
-            max(3, min(num_slides, 20)),
-            DEFAULT_MODEL,
-            visible_ids,
-        )
-    except Exception as exc:
-        raise HTTPException(502, str(exc)) from exc
+    thread = threading.Thread(
+        target=_run_job,
+        args=(job_id, source.text, source.images, source.label, topic, num_slides),
+        daemon=True,
+    )
+    thread.start()
 
-    deck.source = source.label
-    await run_in_threadpool(attach_images, deck, source.images)
+    return {"job_id": job_id, "status_url": f"/api/jobs/{job_id}"}
 
-    pptx_bytes = build_pptx(deck)
-    slug = re.sub(r"[^a-z0-9]+", "_", deck.deck_title.lower()).strip("_")[:60] or "deck"
-    filename = f"{slug}_{datetime.now():%Y%m%d_%H%M%S}.pptx"
-    (OUTPUTS / filename).write_bytes(pptx_bytes)
 
-    return {
-        "deck_title": deck.deck_title,
-        "subtitle": deck.subtitle,
-        "filename": filename,
-        "image_count": sum(1 for s in deck.slides if s.image),
-        "slides": [
-            {
-                "title": s.title,
-                "bullets": s.bullets,
-                "notes": s.notes,
-                "has_image": bool(s.image),
-            }
-            for s in deck.slides
-        ],
-    }
+@app.get("/api/jobs/{job_id}")
+def job_status(job_id: str):
+    if not JOB_ID_RE.match(job_id):
+        raise HTTPException(400, "Bad job id.")
+    with JOB_LOCK:
+        job = JOB_STATE.get(job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found.")
+    return job
 
 
 @app.get("/api/download/{filename}")

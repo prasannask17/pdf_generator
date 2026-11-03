@@ -100,20 +100,45 @@ form.addEventListener('submit', async (e) => {
     }
     
     try {
-        const response = await fetch('/api/generate', {
+        const submitResponse = await fetch('/api/generate', {
             method: 'POST',
-            body: formData
+            body: formData,
         });
-        
-        const data = await response.json();
-        
-        if (!response.ok) {
-            throw new Error(data.detail || 'Generation failed');
+
+        const submitText = await submitResponse.text();
+        if (!submitText) {
+            throw new Error('Server returned an empty response. Please try again.');
         }
-        
-        currentFilename = data.filename;
-        showResult(data);
+
+        let submitData;
+        try {
+            submitData = JSON.parse(submitText);
+        } catch {
+            throw new Error('Server returned an unexpected response. Please try again.');
+        }
+
+        if (!submitResponse.ok) {
+            throw new Error(submitData.detail || 'Generation failed');
+        }
+
+        // Now poll for job status
+        const jobId = submitData.job_id;
+        if (!jobId) {
+            throw new Error('No job ID returned from server.');
+        }
+
+        showProgress('Starting…');
+        const result = await pollJobStatus(jobId);
+        hideProgress();
+
+        if (result.status === 'error') {
+            throw new Error(result.error || 'Generation failed');
+        }
+
+        currentFilename = result.result.filename;
+        showResult(result.result);
     } catch (err) {
+        hideProgress();
         showError(err.message);
     } finally {
         setLoading(false);
@@ -181,4 +206,42 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// Job polling — avoids Render's 60s request timeout
+async function pollJobStatus(jobId) {
+    const maxAttempts = 120; // 120 x 3s = 6 min max
+    for (let i = 0; i < maxAttempts; i++) {
+        await new Promise(r => setTimeout(r, 3000)); // poll every 3 seconds
+        try {
+            const resp = await fetch(`/api/jobs/${jobId}`);
+            const text = await resp.text();
+            if (!text) continue;
+            const job = JSON.parse(text);
+            if (job.message) showProgress(job.message);
+            if (job.status === 'done' || job.status === 'error') {
+                return job;
+            }
+        } catch {
+            // network hiccup — keep polling
+        }
+    }
+    return { status: 'error', error: 'Timed out waiting for results. Please try again with fewer slides.' };
+}
+
+function showProgress(message) {
+    let el = document.getElementById('progress-message');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'progress-message';
+        el.className = 'progress-message';
+        generateBtn.parentNode.insertBefore(el, generateBtn.nextSibling);
+    }
+    el.textContent = message + ' Please wait…';
+    el.classList.remove('hidden');
+}
+
+function hideProgress() {
+    const el = document.getElementById('progress-message');
+    if (el) el.classList.add('hidden');
 }
