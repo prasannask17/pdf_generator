@@ -592,24 +592,55 @@ def load_source(
 
 def _run_job(
     job_id: str,
-    source_text: str,
-    source_images: dict,
-    source_label: str,
+    pdf_bytes: bytes | None,
+    url: str,
+    text: str,
     topic: str,
     num_slides: int,
+    pdf_name: str,
+    page_start: int,
+    page_end: int,
 ) -> None:
-    """Background worker: generate deck, build PPTX, update job state."""
-    _update_job(job_id, status="running", stage="generating", message="Generating slides with AI…")
+    """Background worker: extract source, generate deck, build PPTX, update job state."""
+    _update_job(job_id, status="running", stage="extracting", message="Reading PDF and extracting text…")
     try:
-        visible_ids = set(re.findall(r"\[IMAGE (\w+):", source_text))
+        # Step 1: Load source (PDF extraction, URL scraping, or text)
+        if text and pdf_bytes is None and not url.strip():
+            source = Source(
+                text=_relevance_trim(text, topic),
+                images={},
+                label="pasted text",
+            )
+        else:
+            try:
+                source = load_source(pdf_bytes, url or None, topic, pdf_name, page_start, page_end)
+            except Exception as exc:
+                _update_job(job_id, status="error", stage="error", message="Failed", error=f"Could not read source: {exc}")
+                return
+
+        print(
+            f"DEBUG source: {len(source.text)} chars, {len(source.images)} images, "
+            f"head={source.text[:300]!r}"
+        )
+        if len(source.text) < 600 or "couldn't load" in source.text.lower() or "client challenge" in source.text.lower():
+            _update_job(job_id, status="error", stage="error", message="Failed",
+                        error="Could not extract enough content from this URL. SlideShare and similar sites block automated access — please download the PDF and upload it instead.")
+            return
+
+        # Step 2: Generate deck with Groq
+        _update_job(job_id, stage="generating", message="Generating slides with AI…")
+        visible_ids = set(re.findall(r"\[IMAGE (\w+):", source.text))
         deck = generate_deck_groq(
-            source_text, topic, max(3, min(num_slides, 20)),
+            source.text, topic, max(3, min(num_slides, 20)),
             DEFAULT_MODEL, visible_ids,
         )
-        deck.source = source_label
-        _update_job(job_id, stage="images", message="Attaching images…")
-        attach_images(deck, source_images)
+        deck.source = source.label
 
+        # Step 3: Attach images
+        _update_job(job_id, stage="images", message="Attaching images…")
+        attach_images(deck, source.images)
+
+        # Step 4: Build PPTX
         _update_job(job_id, stage="building", message="Building PPTX file…")
         pptx_bytes = build_pptx(deck)
         slug = re.sub(r"[^a-z0-9]+", "_", deck.deck_title.lower()).strip("_")[:60] or "deck"
@@ -661,33 +692,12 @@ async def generate(
     if pdf_bytes is None and not url.strip() and not text:
         raise HTTPException(400, "Upload a PDF, provide a URL, or paste some text.")
 
-    # Text tab: skip scraping entirely, use pasted content directly
-    if text and pdf_bytes is None and not url.strip():
-        if len(text) < 100:
-            raise HTTPException(400, "Pasted text is too short. Please provide more content.")
-        source = Source(
-            text=_relevance_trim(text, topic),
-            images={},
-            label="pasted text",
-        )
-    else:
-        try:
-            source = await run_in_threadpool(load_source, pdf_bytes, url, topic, pdf_name, page_start, page_end)
-        except Exception as exc:
-            raise HTTPException(400, f"Could not read source: {exc}") from exc
+    if text and pdf_bytes is None and not url.strip() and len(text) < 100:
+        raise HTTPException(400, "Pasted text is too short. Please provide more content.")
 
-    print(
-        f"DEBUG source: {len(source.text)} chars, {len(source.images)} images, "
-        f"head={source.text[:300]!r}"
-    )
-    if len(source.text) < 600 or "couldn't load" in source.text.lower() or "client challenge" in source.text.lower():
-        raise HTTPException(
-            400,
-            "Could not extract enough content from this URL. "
-            "SlideShare and similar sites block automated access — please download the PDF and upload it instead.",
-        )
-
-    # Create a background job — returns immediately so Render doesn't time out
+    # Create a background job immediately — all heavy work (PDF extraction,
+    # Groq API call, PPTX building) runs in the thread, not in this request.
+    # This avoids Render's 60s request timeout.
     job_id = uuid.uuid4().hex[:16]
     with JOB_LOCK:
         JOB_STATE[job_id] = {
@@ -703,7 +713,7 @@ async def generate(
 
     thread = threading.Thread(
         target=_run_job,
-        args=(job_id, source.text, source.images, source.label, topic, num_slides),
+        args=(job_id, pdf_bytes, url, text, topic, num_slides, pdf_name, page_start, page_end),
         daemon=True,
     )
     thread.start()
