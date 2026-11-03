@@ -21,7 +21,26 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
         
         btn.classList.add('active');
         document.getElementById(`${btn.dataset.tab}-tab`).classList.add('active');
+
+        // Disable inputs in inactive tabs so browser validation skips them.
+        // Without this, a hidden <input type="url"> triggers "the string did
+        // not match the expected pattern" when submitting the PDF tab.
+        document.querySelectorAll('.tab-pane').forEach(p => {
+            const active = p.id === `${btn.dataset.tab}-tab`;
+            p.querySelectorAll('input, textarea').forEach(el => {
+                if (active) {
+                    el.removeAttribute('disabled');
+                } else {
+                    el.setAttribute('disabled', 'disabled');
+                }
+            });
+        });
     });
+});
+
+// On page load, disable inputs in inactive tabs (URL is active by default)
+document.querySelectorAll('.tab-pane:not(.active) input, .tab-pane:not(.active) textarea').forEach(el => {
+    el.setAttribute('disabled', 'disabled');
 });
 
 form.addEventListener('submit', async (e) => {
@@ -72,6 +91,10 @@ form.addEventListener('submit', async (e) => {
         formData.append('url', document.getElementById('url').value.trim());
     } else if (activeTab === 'pdf') {
         formData.append('pdf', document.getElementById('pdf').files[0]);
+        const pageStart = document.getElementById('page_start').value;
+        const pageEnd = document.getElementById('page_end').value;
+        if (pageStart) formData.append('page_start', pageStart);
+        if (pageEnd) formData.append('page_end', pageEnd);
     } else if (activeTab === 'text') {
         formData.append('text', document.getElementById('text').value.trim());
     }

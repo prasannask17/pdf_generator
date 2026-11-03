@@ -173,6 +173,30 @@ input[type="file"]::file-selector-button:hover {
     display: none;
 }
 
+.page-range {
+    margin-top: 1rem;
+}
+
+.page-range-fields {
+    display: flex;
+    gap: 1rem;
+}
+
+.page-range-field {
+    flex: 1;
+    margin-bottom: 0.5rem;
+}
+
+.page-range-field label {
+    font-size: 0.85rem;
+    color: var(--muted);
+    margin-bottom: 0.25rem;
+}
+
+.page-range-field input {
+    padding: 0.5rem 0.75rem;
+}
+
 .tab-pane.active {
     display: block;
     animation: fadeIn 150ms ease;

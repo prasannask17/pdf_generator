@@ -231,6 +231,13 @@ def extract_pdf(data: bytes) -> Source:
         if text:
             has_text = True
 
+        # Get page dimensions for background-image detection
+        try:
+            mb = page.mediabox
+            page_w, page_h = float(mb.width), float(mb.height)
+        except Exception:
+            page_w, page_h = 0, 0
+
         tags: list[str] = []
         if len(images) < MAX_IMAGES:
             try:
@@ -238,6 +245,11 @@ def extract_pdf(data: bytes) -> Source:
                     raw = img.data
                     digest = hashlib.md5(raw).hexdigest()
                     if digest in seen:  # logos / repeated images
+                        continue
+                    # Skip full-page background images (e.g. slide-deck PDFs
+                    # where each page is a single full-page image with text
+                    # overlaid). These are not reference figures.
+                    if _is_background_image(img, page_w, page_h):
                         continue
                     prepared = prepare_image(raw)
                     if prepared is None:
@@ -260,6 +272,138 @@ def extract_pdf(data: bytes) -> Source:
     if not has_text:
         raise ValueError("No extractable text found in this PDF (it may be a scanned/image PDF).")
     return Source(text="\n\n".join(parts), images=images)
+
+
+def _is_background_image(img, page_w: float, page_h: float) -> bool:
+    """Detect if an embedded image is a full-page background (not a figure).
+
+    Compares the image's aspect ratio to the page's aspect ratio. If they
+    match closely and the image is large, it's likely a slide/page background.
+    """
+    if not page_w or not page_h:
+        return False
+    try:
+        from PIL import Image as PILImage
+        im = PILImage.open(io.BytesIO(img.data))
+        iw, ih = im.size
+    except Exception:
+        return False
+    # Skip small images (icons, logos) — those aren't backgrounds
+    if iw < 400 or ih < 300:
+        return False
+    page_ar = page_w / page_h
+    img_ar = iw / ih
+    # If the image aspect ratio matches the page within 5%, it's a background
+    return abs(img_ar - page_ar) / page_ar < 0.05
+
+
+# ---------------------------------------------------------------------------
+# Unit filtering — detect "unit N" in the topic and keep only matching pages
+# ---------------------------------------------------------------------------
+
+_UNIT_RE = re.compile(r"\bunit\s*([0-9]+)\b", re.IGNORECASE)
+
+
+def filter_by_unit(source: Source, topic: str) -> Source:
+    """If the topic mentions 'unit N', keep only pages whose header matches.
+
+    Works for PDFs where each page starts with a line like 'UNIT 1 · TITLE'.
+    If no unit is mentioned, or no unit headers are found in the text, returns
+    the source unchanged.
+    """
+    match = _UNIT_RE.search(topic)
+    if not match:
+        return source
+
+    unit_num = match.group(1)
+    unit_pattern = re.compile(rf"^UNIT\s*{unit_num}\b", re.IGNORECASE)
+
+    # Split source text into page blocks (they were joined with \n\n)
+    blocks = source.text.split("\n\n")
+    kept_blocks: list[str] = []
+    kept_page_nums: set[int] = set()
+
+    for block in blocks:
+        first_line = block.strip().split("\n")[0].strip()
+        if unit_pattern.match(first_line):
+            kept_blocks.append(block)
+            # Track page number from image markers like [IMAGE p5_1: ...]
+            for m in re.finditer(r"\[IMAGE p(\d+)_", block):
+                kept_page_nums.add(int(m.group(1)))
+
+    if not kept_blocks:
+        return source  # no unit headers found — don't filter
+
+    # Filter images to only those from kept pages
+    filtered_images: dict[str, ImageRef] = {}
+    for iid, ref in source.images.items():
+        m = re.match(r"p(\d+)_", iid)
+        if m and int(m.group(1)) in kept_page_nums:
+            filtered_images[iid] = ref
+
+    new_source = Source(
+        text="\n\n".join(kept_blocks),
+        images=filtered_images,
+        label=source.label,
+    )
+    print(
+        f"DEBUG unit filter: topic mentions unit {unit_num}, "
+        f"kept {len(kept_blocks)} page blocks, {len(filtered_images)} images"
+    )
+    return new_source
+
+
+def filter_by_page_range(source: Source, page_start: int, page_end: int) -> Source:
+    """Keep only pages within [page_start, page_end] (1-indexed).
+
+    Page numbers are extracted from image markers like [IMAGE p5_1: ...].
+    Text blocks without image markers are kept (we can't determine their page
+    number, so we err on the side of inclusion — _relevance_trim handles
+    trimming later).
+    """
+    if not page_start and not page_end:
+        return source
+
+    start = page_start if page_start > 0 else 1
+    end = page_end if page_end > 0 else 999999
+
+    blocks = source.text.split("\n\n")
+    kept_blocks: list[str] = []
+    kept_page_nums: set[int] = set()
+
+    for block in blocks:
+        # Find page numbers from image markers in this block
+        block_pages = set(int(m.group(1)) for m in re.finditer(r"\[IMAGE p(\d+)_", block))
+        if block_pages:
+            # Keep block if any of its images are in range
+            in_range = any(start <= p <= end for p in block_pages)
+            if in_range:
+                kept_blocks.append(block)
+                kept_page_nums.update(p for p in block_pages if start <= p <= end)
+        else:
+            # No image markers — can't determine page number, keep it
+            kept_blocks.append(block)
+
+    if not kept_blocks:
+        return source
+
+    # Filter images to only those in range
+    filtered_images: dict[str, ImageRef] = {}
+    for iid, ref in source.images.items():
+        m = re.match(r"p(\d+)_", iid)
+        if m and start <= int(m.group(1)) <= end:
+            filtered_images[iid] = ref
+
+    new_source = Source(
+        text="\n\n".join(kept_blocks),
+        images=filtered_images,
+        label=source.label,
+    )
+    print(
+        f"DEBUG page range filter: pages {start}-{end}, "
+        f"kept {len(kept_blocks)} blocks, {len(filtered_images)} images"
+    )
+    return new_source
 
 
 def _extract_slideshare(soup: BeautifulSoup, page_url: str) -> Source | None:
@@ -395,7 +539,12 @@ def extract_url(url: str) -> Source:
 
 
 def load_source(
-    pdf_bytes: bytes | None, url: str | None, topic: str = "", pdf_name: str = ""
+    pdf_bytes: bytes | None,
+    url: str | None,
+    topic: str = "",
+    pdf_name: str = "",
+    page_start: int = 0,
+    page_end: int = 0,
 ) -> Source:
     """Return extracted text (topic-relevance trimmed) plus candidate images."""
     if pdf_bytes:
@@ -405,6 +554,10 @@ def load_source(
         src = extract_url(url.strip())
     else:
         raise ValueError("Provide a PDF file or a URL.")
+    # Apply page range first, then unit filter (both only for PDFs)
+    if pdf_bytes:
+        src = filter_by_page_range(src, page_start, page_end)
+        src = filter_by_unit(src, topic)
     src.text = _relevance_trim(src.text, topic)
     return src
 
@@ -420,6 +573,8 @@ async def generate(
     model: str = Form(""),  # accepted for frontend compatibility, ignored
     url: str = Form(""),
     text: str = Form(""),
+    page_start: int = Form(0),
+    page_end: int = Form(0),
     pdf: UploadFile | None = File(None),
 ):
     topic = topic.strip()
@@ -447,7 +602,7 @@ async def generate(
         )
     else:
         try:
-            source = await run_in_threadpool(load_source, pdf_bytes, url, topic, pdf_name)
+            source = await run_in_threadpool(load_source, pdf_bytes, url, topic, pdf_name, page_start, page_end)
         except Exception as exc:
             raise HTTPException(400, f"Could not read source: {exc}") from exc
 

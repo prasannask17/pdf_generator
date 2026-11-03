@@ -1,1 +1,8 @@
 .env
+.DS_Store
+__pycache__/
+.idea/
+outputs/
+*.pdf
+large_pdf_files/uploads/
+large_pdf_files/jobs/
