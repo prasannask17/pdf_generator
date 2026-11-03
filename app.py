@@ -250,6 +250,23 @@ def extract_pdf(data: bytes) -> Source:
     seen: set[str] = set()
     has_text = False
 
+    # Check page 1 for a full-page background image. If found, this is likely
+    # a slide-deck PDF where every page is a full-page image — skip all image
+    # extraction to avoid OOM on memory-limited hosts (Render free: 512MB).
+    skip_all_images = False
+    if reader.pages:
+        try:
+            first_page = reader.pages[0]
+            mb = first_page.mediabox
+            pw, ph = float(mb.width), float(mb.height)
+            for img in first_page.images:
+                if _is_background_image(img, pw, ph):
+                    skip_all_images = True
+                    print("DEBUG: full-page background detected, skipping all image extraction")
+                    break
+        except Exception:
+            pass
+
     for pno, page in enumerate(reader.pages, start=1):
         text = (page.extract_text() or "").strip()
         if text:
@@ -263,7 +280,7 @@ def extract_pdf(data: bytes) -> Source:
             page_w, page_h = 0, 0
 
         tags: list[str] = []
-        if len(images) < MAX_IMAGES:
+        if not skip_all_images and len(images) < MAX_IMAGES:
             try:
                 for img in page.images:
                     raw = img.data
@@ -617,6 +634,9 @@ def _run_job(
             except Exception as exc:
                 _update_job(job_id, status="error", stage="error", message="Failed", error=f"Could not read source: {exc}")
                 return
+
+        # Free the raw PDF bytes — no longer needed after extraction
+        del pdf_bytes
 
         print(
             f"DEBUG source: {len(source.text)} chars, {len(source.images)} images, "
