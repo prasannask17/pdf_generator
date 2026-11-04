@@ -13,6 +13,25 @@ const downloadBtn = document.getElementById('download-btn');
 const newBtn = document.getElementById('new-btn');
 
 let currentFilename = '';
+let currentFormat = 'pptx'; // 'pptx' or 'pdf'
+
+// Format toggle — PPT / PDF selector in the result section
+document.querySelectorAll('.format-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.format-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentFormat = btn.dataset.format;
+        updateDownloadButton();
+    });
+});
+
+function updateDownloadButton() {
+    if (currentFormat === 'pdf') {
+        downloadBtn.textContent = 'Download .pdf';
+    } else {
+        downloadBtn.textContent = 'Download .pptx';
+    }
+}
 
 document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -147,7 +166,12 @@ form.addEventListener('submit', async (e) => {
 
 downloadBtn.addEventListener('click', () => {
     if (currentFilename) {
-        window.location.href = `/api/download/${currentFilename}`;
+        if (currentFormat === 'pdf') {
+            const pdfFilename = currentFilename.replace(/\.pptx$/, '.pdf');
+            window.location.href = `/api/download-pdf/${currentFilename}`;
+        } else {
+            window.location.href = `/api/download/${currentFilename}`;
+        }
     }
 });
 
@@ -157,6 +181,10 @@ newBtn.addEventListener('click', () => {
     hideResult();
     hideError();
     currentFilename = '';
+    currentFormat = 'pptx';
+    document.querySelectorAll('.format-btn').forEach(b => b.classList.remove('active'));
+    document.querySelector('.format-btn[data-format="pptx"]').classList.add('active');
+    updateDownloadButton();
 });
 
 function showResult(data) {

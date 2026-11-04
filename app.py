@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import threading
@@ -40,6 +41,36 @@ app = FastAPI(title="Doc2PPT")
 ROOT = Path(__file__).parent
 OUTPUTS = ROOT / "outputs"
 OUTPUTS.mkdir(exist_ok=True)
+
+# ============================================================================
+# Logging — writes to both console (Render logs) and a persistent file
+# ============================================================================
+
+LOG_FILE = ROOT / "search_logs.jsonl"
+
+logger = logging.getLogger("doc2ppt")
+logger.setLevel(logging.INFO)
+logger.handlers.clear()  # avoid duplicate handlers on reload
+
+# Console handler — shows in Render logs and terminal
+_console = logging.StreamHandler()
+_console.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S"))
+logger.addHandler(_console)
+
+# File handler — appends every search as a JSON line for persistence
+try:
+    _file = logging.FileHandler(str(LOG_FILE))
+    _file.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(_file)
+except Exception:
+    pass  # read-only filesystem on some hosts
+
+
+def log_search(**fields) -> None:
+    """Log a structured search record to console and file."""
+    fields["timestamp"] = datetime.now().isoformat(timespec="seconds")
+    logger.info(json.dumps(fields, ensure_ascii=False))
+
 
 NAME_RE = re.compile(r"^[a-zA-Z0-9_\-\.]+$")
 
@@ -668,8 +699,24 @@ def _run_job(
             ],
         }
         _update_job(job_id, status="done", stage="done", message="Finished", result=result)
+        log_search(
+            event="job_done",
+            job_id=job_id,
+            topic=topic,
+            deck_title=deck.deck_title,
+            slides=len(deck.slides),
+            images=result["image_count"],
+            source_chars=len(source.text),
+            filename=filename,
+        )
     except Exception as exc:
         _update_job(job_id, status="error", stage="error", message="Failed", error=str(exc))
+        log_search(
+            event="job_error",
+            job_id=job_id,
+            topic=topic,
+            error=str(exc),
+        )
 
 
 @app.post("/api/generate")
@@ -700,10 +747,29 @@ async def generate(
     if text and pdf_bytes is None and not url.strip() and len(text) < 100:
         raise HTTPException(400, "Pasted text is too short. Please provide more content.")
 
+    # Determine source type for logging
+    source_type = "pdf" if pdf_bytes else ("url" if url.strip() else "text")
+    pdf_size_mb = round(len(pdf_bytes) / (1024 * 1024), 2) if pdf_bytes else 0
+
     # Create a background job immediately — all heavy work (PDF extraction,
     # Groq API call, PPTX building) runs in the thread, not in this request.
     # This avoids Render's 60s request timeout.
     job_id = uuid.uuid4().hex[:16]
+
+    log_search(
+        event="job_submitted",
+        job_id=job_id,
+        topic=topic,
+        source_type=source_type,
+        pdf_name=pdf_name or None,
+        pdf_size_mb=pdf_size_mb or None,
+        url=url.strip() or None,
+        text_length=len(text) if text else 0,
+        num_slides=num_slides,
+        page_start=page_start or None,
+        page_end=page_end or None,
+    )
+
     with JOB_LOCK:
         JOB_STATE[job_id] = {
             "id": job_id,
@@ -737,6 +803,30 @@ def job_status(job_id: str):
     return job
 
 
+@app.get("/api/logs")
+def get_logs(limit: int = 50):
+    """Return recent search logs as JSON."""
+    if not LOG_FILE.is_file():
+        return {"logs": []}
+    try:
+        lines = LOG_FILE.read_text(encoding="utf-8").strip().splitlines()
+    except Exception:
+        return {"logs": []}
+    # Parse each line as JSON, return most recent first
+    logs = []
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            logs.append(json.loads(line))
+        except Exception:
+            continue
+        if len(logs) >= limit:
+            break
+    return {"logs": logs, "total": len(lines)}
+
+
 @app.get("/api/download/{filename}")
 def download(filename: str):
     if not NAME_RE.match(filename) or not filename.endswith(".pptx"):
@@ -748,6 +838,88 @@ def download(filename: str):
         path,
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
         filename=filename,
+    )
+
+
+# ============================================================================
+# PDF export — convert PPTX → PDF via LibreOffice headless
+# ============================================================================
+
+import shutil
+import subprocess
+import tempfile
+
+
+def _find_libreoffice() -> str | None:
+    """Return the path to LibreOffice / soffice, or None if not installed."""
+    for name in ("libreoffice", "soffice"):
+        path = shutil.which(name)
+        if path:
+            return path
+    # macOS .app bundle location
+    macos_path = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
+    if Path(macos_path).exists():
+        return macos_path
+    return None
+
+
+@app.get("/api/download-pdf/{filename}")
+def download_pdf(filename: str):
+    """Convert an already-generated .pptx to PDF and return it for download."""
+    if not NAME_RE.match(filename) or not filename.endswith(".pptx"):
+        raise HTTPException(400, "Bad filename.")
+    pptx_path = OUTPUTS / filename
+    if not pptx_path.is_file():
+        raise HTTPException(404, "PPTX file not found.")
+
+    lo = _find_libreoffice()
+    if not lo:
+        raise HTTPException(
+            503,
+            "PDF export requires LibreOffice. "
+            "Install it from https://www.libreoffice.org/download/download/ "
+            "and restart the server. You can still download the .pptx file.",
+        )
+
+    pdf_filename = filename.replace(".pptx", ".pdf")
+    pdf_path = OUTPUTS / pdf_filename
+
+    # Only convert if the PDF doesn't already exist (cache it)
+    if not pdf_path.is_file():
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                result = subprocess.run(
+                    [
+                        lo,
+                        "--headless",
+                        "--convert-to", "pdf",
+                        "--outdir", tmp,
+                        str(pptx_path),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                if result.returncode != 0:
+                    raise RuntimeError(result.stderr or result.stdout)
+                # LibreOffice writes the PDF with the same stem
+                tmp_pdf = Path(tmp) / pdf_filename
+                if not tmp_pdf.is_file():
+                    # Some versions use the original stem without the path prefix
+                    candidates = list(Path(tmp).glob("*.pdf"))
+                    if not candidates:
+                        raise RuntimeError("LibreOffice did not produce a PDF file.")
+                    tmp_pdf = candidates[0]
+                shutil.copy2(str(tmp_pdf), str(pdf_path))
+        except subprocess.TimeoutExpired:
+            raise HTTPException(504, "PDF conversion timed out. Try again or download the .pptx.")
+        except Exception as exc:
+            raise HTTPException(500, f"PDF conversion failed: {exc}")
+
+    return FileResponse(
+        pdf_path,
+        media_type="application/pdf",
+        filename=pdf_filename,
     )
 
 

@@ -365,8 +365,51 @@ input[type="file"]::file-selector-button:hover {
 
 .result-actions {
     display: flex;
+    flex-wrap: wrap;
+    align-items: center;
     gap: 1rem;
     margin-top: 1.5rem;
+}
+
+.format-selector {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-right: auto;
+}
+
+.format-label {
+    font-size: 0.85rem;
+    color: var(--muted);
+    white-space: nowrap;
+}
+
+.format-toggle {
+    display: flex;
+    border: 1px solid var(--border, #d1d5db);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.format-btn {
+    padding: 0.35rem 0.85rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    border: none;
+    background: transparent;
+    color: var(--muted, #6b7280);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+.format-btn:hover {
+    background: var(--hover-bg, #f3f4f6);
+    color: var(--text, #111827);
+}
+
+.format-btn.active {
+    background: var(--primary, #4f46e5);
+    color: #fff;
 }
 
 .result-actions .btn {
@@ -396,5 +439,10 @@ footer {
     
     .result-actions {
         flex-direction: column;
+    }
+
+    .format-selector {
+        width: 100%;
+        justify-content: center;
     }
 }
