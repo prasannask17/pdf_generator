@@ -8,3 +8,4 @@ beautifulsoup4
 pypdf
 pillow
 python-pptx
+reportlab==4.2.5

@@ -842,78 +842,243 @@ def download(filename: str):
 
 
 # ============================================================================
-# PDF export — convert PPTX → PDF via LibreOffice headless
+# PDF export — pure Python conversion via python-pptx + reportlab
+# No system dependencies required; works on Render free tier.
 # ============================================================================
 
-import shutil
-import subprocess
-import tempfile
+def _pptx_to_pdf(pptx_path: Path, pdf_path: Path) -> None:
+    """Convert a PPTX file to PDF using python-pptx (for content) and
+    reportlab (for rendering). Each slide becomes one PDF page with:
+    - A coloured background matching the slide theme
+    - Title in large bold text
+    - Bullet points as a list
+    - Embedded image (if present on the slide)
+    """
+    from pptx import Presentation
+    from pptx.util import Pt
+    from pptx.dml.color import RGBColor
+    from reportlab.lib.pagesizes import landscape, A4
+    from reportlab.lib import colors
+    from reportlab.lib.units import inch
+    from reportlab.platypus import SimpleDocTemplate, Spacer
+    from reportlab.platypus import Paragraph, Image as RLImage, HRFlowable
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_LEFT, TA_CENTER
+    import tempfile, textwrap
 
+    prs = Presentation(str(pptx_path))
 
-def _find_libreoffice() -> str | None:
-    """Return the path to LibreOffice / soffice, or None if not installed."""
-    for name in ("libreoffice", "soffice"):
-        path = shutil.which(name)
-        if path:
-            return path
-    # macOS .app bundle location
-    macos_path = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
-    if Path(macos_path).exists():
-        return macos_path
-    return None
+    PAGE_W, PAGE_H = landscape(A4)  # 841 x 595 pt
+    MARGIN = 0.6 * inch
+
+    # Colour palette — matches the presentation.py theme colours
+    BG_DARK   = colors.HexColor("#1e1b4b")   # slide background
+    ACCENT    = colors.HexColor("#818cf8")    # title colour
+    TEXT_CLR  = colors.HexColor("#e2e8f0")    # body text
+    BULLET_CL = colors.HexColor("#a5b4fc")    # bullet text
+    RULE_CLR  = colors.HexColor("#4338ca")    # divider line
+
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle(
+        "SlideTitle",
+        parent=styles["Heading1"],
+        fontSize=26,
+        leading=32,
+        textColor=ACCENT,
+        fontName="Helvetica-Bold",
+        alignment=TA_LEFT,
+        spaceAfter=4,
+    )
+    bullet_style = ParagraphStyle(
+        "SlideBullet",
+        parent=styles["Normal"],
+        fontSize=13,
+        leading=19,
+        textColor=BULLET_CL,
+        fontName="Helvetica",
+        leftIndent=14,
+        spaceAfter=3,
+        bulletIndent=0,
+        bulletText="•",
+    )
+    notes_style = ParagraphStyle(
+        "SlideNotes",
+        parent=styles["Normal"],
+        fontSize=9,
+        leading=13,
+        textColor=colors.HexColor("#64748b"),
+        fontName="Helvetica-Oblique",
+        spaceBefore=6,
+    )
+
+    from reportlab.pdfgen import canvas as rl_canvas
+    from reportlab.lib.utils import ImageReader
+
+    c = rl_canvas.Canvas(str(pdf_path), pagesize=landscape(A4))
+
+    def _hex_from_pptx_color(clr):
+        """Try to extract a hex string from a pptx RGBColor or theme colour."""
+        try:
+            return f"#{clr.rgb}"
+        except Exception:
+            return None
+
+    for slide in prs.slides:
+        # --- background ---
+        c.setFillColor(BG_DARK)
+        c.rect(0, 0, PAGE_W, PAGE_H, fill=1, stroke=0)
+
+        # --- gather text from shapes ---
+        title_text = ""
+        bullets: list[str] = []
+        notes_text = ""
+        img_bytes: bytes | None = None
+
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                tf = shape.text_frame
+                paras = [p.text.strip() for p in tf.paragraphs if p.text.strip()]
+                if not paras:
+                    continue
+                # Heuristic: the shape whose placeholder idx==0 or name contains
+                # "Title" is the title; everything else is body.
+                name = (shape.name or "").lower()
+                try:
+                    ph = shape.placeholder_format
+                except ValueError:
+                    ph = None
+                if ph and ph.idx == 0:
+                    title_text = paras[0]
+                    if len(paras) > 1:
+                        bullets.extend(paras[1:])
+                elif "title" in name:
+                    title_text = title_text or paras[0]
+                    if len(paras) > 1:
+                        bullets.extend(paras[1:])
+                else:
+                    bullets.extend(paras)
+
+            # Embedded picture
+            if shape.shape_type == 13 and img_bytes is None:  # MSO_SHAPE_TYPE.PICTURE
+                try:
+                    img_bytes = shape.image.blob
+                except Exception:
+                    pass
+
+        # Notes
+        if slide.has_notes_slide:
+            nf = slide.notes_slide.notes_text_frame
+            notes_text = nf.text.strip() if nf else ""
+
+        # --- layout constants ---
+        left = MARGIN
+        right_edge = PAGE_W - MARGIN
+        content_w = right_edge - left
+        top = PAGE_H - MARGIN
+
+        # Decide if we show image on the right half
+        show_img = img_bytes is not None
+        text_w = content_w * 0.58 if show_img else content_w
+
+        # --- title ---
+        title_display = title_text or "Slide"
+        # Wrap long titles
+        wrapped_title = textwrap.fill(title_display, width=55 if show_img else 80)
+        c.setFont("Helvetica-Bold", 26)
+        c.setFillColor(ACCENT)
+        title_y = top - 30
+        for line in wrapped_title.split("\n"):
+            c.drawString(left, title_y, line)
+            title_y -= 32
+
+        # Divider line
+        c.setStrokeColor(RULE_CLR)
+        c.setLineWidth(1.5)
+        c.line(left, title_y - 6, left + text_w, title_y - 6)
+        title_y -= 18
+
+        # --- bullets ---
+        bullet_y = title_y
+        c.setFont("Helvetica", 13)
+        c.setFillColor(BULLET_CL)
+        for b in bullets:
+            text = f"• {b}"
+            # Word-wrap each bullet
+            wrapped = textwrap.fill(text, width=62 if show_img else 95)
+            for line in wrapped.split("\n"):
+                if bullet_y < MARGIN + 30:
+                    break
+                c.drawString(left + 10, bullet_y, line)
+                bullet_y -= 19
+
+        # --- notes ---
+        if notes_text:
+            c.setFont("Helvetica-Oblique", 8)
+            c.setFillColor(colors.HexColor("#64748b"))
+            note_wrapped = textwrap.fill(notes_text[:200], width=110)
+            c.drawString(left, MARGIN - 2, note_wrapped.split("\n")[0])
+
+        # --- image ---
+        if show_img:
+            try:
+                img_buf = io.BytesIO(img_bytes)
+                pil_img = Image.open(img_buf)
+                pil_img.thumbnail((1200, 900))
+                out_buf = io.BytesIO()
+                fmt = "PNG" if pil_img.mode in ("RGBA", "LA", "P") else "JPEG"
+                pil_img.save(out_buf, fmt)
+                out_buf.seek(0)
+
+                img_area_x = left + text_w + 0.3 * inch
+                img_area_w = content_w * 0.38
+                img_area_h = PAGE_H - 2 * MARGIN
+
+                iw, ih = pil_img.size
+                scale = min(img_area_w / iw, img_area_h / ih)
+                draw_w = iw * scale
+                draw_h = ih * scale
+                draw_x = img_area_x + (img_area_w - draw_w) / 2
+                draw_y = MARGIN + (img_area_h - draw_h) / 2
+
+                c.drawImage(
+                    ImageReader(out_buf),
+                    draw_x, draw_y, draw_w, draw_h,
+                    preserveAspectRatio=True, mask="auto",
+                )
+            except Exception as e:
+                print(f"DEBUG pdf image error: {e}")
+
+        # --- slide number ---
+        slide_num = prs.slides.index(slide) + 1
+        c.setFont("Helvetica", 8)
+        c.setFillColor(colors.HexColor("#475569"))
+        c.drawRightString(PAGE_W - MARGIN, MARGIN - 2, str(slide_num))
+
+        c.showPage()
+
+    c.save()
 
 
 @app.get("/api/download-pdf/{filename}")
 def download_pdf(filename: str):
-    """Convert an already-generated .pptx to PDF and return it for download."""
+    """Convert an already-generated .pptx to PDF using pure Python (no LibreOffice)."""
     if not NAME_RE.match(filename) or not filename.endswith(".pptx"):
         raise HTTPException(400, "Bad filename.")
     pptx_path = OUTPUTS / filename
     if not pptx_path.is_file():
         raise HTTPException(404, "PPTX file not found.")
 
-    lo = _find_libreoffice()
-    if not lo:
-        raise HTTPException(
-            503,
-            "PDF export requires LibreOffice. "
-            "Install it from https://www.libreoffice.org/download/download/ "
-            "and restart the server. You can still download the .pptx file.",
-        )
-
     pdf_filename = filename.replace(".pptx", ".pdf")
     pdf_path = OUTPUTS / pdf_filename
 
-    # Only convert if the PDF doesn't already exist (cache it)
+    # Cache: only convert if PDF doesn't already exist
     if not pdf_path.is_file():
         try:
-            with tempfile.TemporaryDirectory() as tmp:
-                result = subprocess.run(
-                    [
-                        lo,
-                        "--headless",
-                        "--convert-to", "pdf",
-                        "--outdir", tmp,
-                        str(pptx_path),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                )
-                if result.returncode != 0:
-                    raise RuntimeError(result.stderr or result.stdout)
-                # LibreOffice writes the PDF with the same stem
-                tmp_pdf = Path(tmp) / pdf_filename
-                if not tmp_pdf.is_file():
-                    # Some versions use the original stem without the path prefix
-                    candidates = list(Path(tmp).glob("*.pdf"))
-                    if not candidates:
-                        raise RuntimeError("LibreOffice did not produce a PDF file.")
-                    tmp_pdf = candidates[0]
-                shutil.copy2(str(tmp_pdf), str(pdf_path))
-        except subprocess.TimeoutExpired:
-            raise HTTPException(504, "PDF conversion timed out. Try again or download the .pptx.")
+            _pptx_to_pdf(pptx_path, pdf_path)
         except Exception as exc:
+            # Clean up partial file
+            pdf_path.unlink(missing_ok=True)
             raise HTTPException(500, f"PDF conversion failed: {exc}")
 
     return FileResponse(
