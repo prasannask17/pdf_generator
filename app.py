@@ -842,223 +842,188 @@ def download(filename: str):
 
 
 # ============================================================================
+# ============================================================================
 # PDF export — pure Python conversion via python-pptx + reportlab
 # No system dependencies required; works on Render free tier.
 # ============================================================================
 
 def _pptx_to_pdf(pptx_path: Path, pdf_path: Path) -> None:
-    """Convert a PPTX file to PDF using python-pptx (for content) and
-    reportlab (for rendering). Each slide becomes one PDF page with:
-    - A coloured background matching the slide theme
-    - Title in large bold text
-    - Bullet points as a list
-    - Embedded image (if present on the slide)
+    """Convert a PPTX to a styled PDF matching the presentation theme:
+    - Title slide: dark slate bg, large white title, blue accent bar
+    - Content slides: light bg, dark header bar, blue accent strip, bullets, optional image
     """
-    from pptx import Presentation
-    from pptx.util import Pt
-    from pptx.dml.color import RGBColor
-    from reportlab.lib.pagesizes import landscape, A4
-    from reportlab.lib import colors
-    from reportlab.lib.units import inch
-    from reportlab.platypus import SimpleDocTemplate, Spacer
-    from reportlab.platypus import Paragraph, Image as RLImage, HRFlowable
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.enums import TA_LEFT, TA_CENTER
-    import tempfile, textwrap
-
-    prs = Presentation(str(pptx_path))
-
-    PAGE_W, PAGE_H = landscape(A4)  # 841 x 595 pt
-    MARGIN = 0.6 * inch
-
-    # Colour palette — matches the presentation.py theme colours
-    BG_DARK   = colors.HexColor("#1e1b4b")   # slide background
-    ACCENT    = colors.HexColor("#818cf8")    # title colour
-    TEXT_CLR  = colors.HexColor("#e2e8f0")    # body text
-    BULLET_CL = colors.HexColor("#a5b4fc")    # bullet text
-    RULE_CLR  = colors.HexColor("#4338ca")    # divider line
-
-    styles = getSampleStyleSheet()
-
-    title_style = ParagraphStyle(
-        "SlideTitle",
-        parent=styles["Heading1"],
-        fontSize=26,
-        leading=32,
-        textColor=ACCENT,
-        fontName="Helvetica-Bold",
-        alignment=TA_LEFT,
-        spaceAfter=4,
-    )
-    bullet_style = ParagraphStyle(
-        "SlideBullet",
-        parent=styles["Normal"],
-        fontSize=13,
-        leading=19,
-        textColor=BULLET_CL,
-        fontName="Helvetica",
-        leftIndent=14,
-        spaceAfter=3,
-        bulletIndent=0,
-        bulletText="•",
-    )
-    notes_style = ParagraphStyle(
-        "SlideNotes",
-        parent=styles["Normal"],
-        fontSize=9,
-        leading=13,
-        textColor=colors.HexColor("#64748b"),
-        fontName="Helvetica-Oblique",
-        spaceBefore=6,
-    )
-
+    from pptx import Presentation as PptxPresentation
     from reportlab.pdfgen import canvas as rl_canvas
+    from reportlab.lib.pagesizes import landscape, A4
+    from reportlab.lib.units import inch
+    from reportlab.lib import colors
     from reportlab.lib.utils import ImageReader
+    import textwrap
 
-    c = rl_canvas.Canvas(str(pdf_path), pagesize=landscape(A4))
+    prs = PptxPresentation(str(pptx_path))
+    PW, PH = landscape(A4)
+    M = 0.55 * inch
 
-    def _hex_from_pptx_color(clr):
-        """Try to extract a hex string from a pptx RGBColor or theme colour."""
-        try:
-            return f"#{clr.rgb}"
-        except Exception:
-            return None
+    C_BG_DARK  = colors.HexColor("#1F2937")
+    C_ACCENT   = colors.HexColor("#2563EB")
+    C_WHITE    = colors.HexColor("#FFFFFF")
+    C_TITLE    = colors.HexColor("#1F2937")
+    C_BODY     = colors.HexColor("#374151")
+    C_BULLET   = colors.HexColor("#2563EB")
+    C_MUTED    = colors.HexColor("#6B7280")
+    C_SUBTITLE = colors.HexColor("#D1D5DB")
+    C_SLIDE_BG = colors.HexColor("#F9FAFB")
 
+    def wrap_draw(c, text, x, y, max_w, font, size, clr, lh, max_lines=None):
+        c.setFont(font, size)
+        c.setFillColor(clr)
+        cpl = max(1, int(max_w / (size * 0.52)))
+        lines = []
+        for para in text.split("\n"):
+            lines.extend(textwrap.wrap(para, width=cpl) or [""])
+        for i, line in enumerate(lines):
+            if max_lines and i >= max_lines:
+                break
+            c.drawString(x, y, line)
+            y -= lh
+        return y
+
+    def draw_bullets(c, bullets, x, y, max_w, size, body_c, dot_c, lh):
+        cpl = max(1, int((max_w - 18) / (size * 0.52)))
+        for b in bullets:
+            if y < M + 20:
+                break
+            c.setFillColor(dot_c)
+            c.circle(x + 5, y + size * 0.28, 2.5, fill=1, stroke=0)
+            c.setFillColor(body_c)
+            c.setFont("Helvetica", size)
+            for i, line in enumerate(textwrap.wrap(b, width=cpl) or [""]):
+                if y < M + 20:
+                    break
+                c.drawString(x + 14, y, line)
+                y -= lh
+            y -= 3
+        return y
+
+    # extract slide data
+    slides_data = []
     for slide in prs.slides:
-        # --- background ---
-        c.setFillColor(BG_DARK)
-        c.rect(0, 0, PAGE_W, PAGE_H, fill=1, stroke=0)
-
-        # --- gather text from shapes ---
-        title_text = ""
-        bullets: list[str] = []
-        notes_text = ""
-        img_bytes: bytes | None = None
-
+        title_text, bullets, notes_text, img_bytes = "", [], "", None
         for shape in slide.shapes:
             if shape.has_text_frame:
-                tf = shape.text_frame
-                paras = [p.text.strip() for p in tf.paragraphs if p.text.strip()]
+                paras = [p.text.strip() for p in shape.text_frame.paragraphs if p.text.strip()]
                 if not paras:
                     continue
-                # Heuristic: the shape whose placeholder idx==0 or name contains
-                # "Title" is the title; everything else is body.
                 name = (shape.name or "").lower()
                 try:
                     ph = shape.placeholder_format
                 except ValueError:
                     ph = None
-                if ph and ph.idx == 0:
+                if (ph and ph.idx == 0) or ("title" in name and not title_text):
                     title_text = paras[0]
-                    if len(paras) > 1:
-                        bullets.extend(paras[1:])
-                elif "title" in name:
-                    title_text = title_text or paras[0]
-                    if len(paras) > 1:
-                        bullets.extend(paras[1:])
+                    bullets.extend(paras[1:])
                 else:
                     bullets.extend(paras)
-
-            # Embedded picture
-            if shape.shape_type == 13 and img_bytes is None:  # MSO_SHAPE_TYPE.PICTURE
+            if shape.shape_type == 13 and img_bytes is None:
                 try:
                     img_bytes = shape.image.blob
                 except Exception:
                     pass
-
-        # Notes
         if slide.has_notes_slide:
-            nf = slide.notes_slide.notes_text_frame
-            notes_text = nf.text.strip() if nf else ""
-
-        # --- layout constants ---
-        left = MARGIN
-        right_edge = PAGE_W - MARGIN
-        content_w = right_edge - left
-        top = PAGE_H - MARGIN
-
-        # Decide if we show image on the right half
-        show_img = img_bytes is not None
-        text_w = content_w * 0.58 if show_img else content_w
-
-        # --- title ---
-        title_display = title_text or "Slide"
-        # Wrap long titles
-        wrapped_title = textwrap.fill(title_display, width=55 if show_img else 80)
-        c.setFont("Helvetica-Bold", 26)
-        c.setFillColor(ACCENT)
-        title_y = top - 30
-        for line in wrapped_title.split("\n"):
-            c.drawString(left, title_y, line)
-            title_y -= 32
-
-        # Divider line
-        c.setStrokeColor(RULE_CLR)
-        c.setLineWidth(1.5)
-        c.line(left, title_y - 6, left + text_w, title_y - 6)
-        title_y -= 18
-
-        # --- bullets ---
-        bullet_y = title_y
-        c.setFont("Helvetica", 13)
-        c.setFillColor(BULLET_CL)
-        for b in bullets:
-            text = f"• {b}"
-            # Word-wrap each bullet
-            wrapped = textwrap.fill(text, width=62 if show_img else 95)
-            for line in wrapped.split("\n"):
-                if bullet_y < MARGIN + 30:
-                    break
-                c.drawString(left + 10, bullet_y, line)
-                bullet_y -= 19
-
-        # --- notes ---
-        if notes_text:
-            c.setFont("Helvetica-Oblique", 8)
-            c.setFillColor(colors.HexColor("#64748b"))
-            note_wrapped = textwrap.fill(notes_text[:200], width=110)
-            c.drawString(left, MARGIN - 2, note_wrapped.split("\n")[0])
-
-        # --- image ---
-        if show_img:
             try:
-                img_buf = io.BytesIO(img_bytes)
-                pil_img = Image.open(img_buf)
-                pil_img.thumbnail((1200, 900))
-                out_buf = io.BytesIO()
-                fmt = "PNG" if pil_img.mode in ("RGBA", "LA", "P") else "JPEG"
-                pil_img.save(out_buf, fmt)
-                out_buf.seek(0)
+                notes_text = (slide.notes_slide.notes_text_frame.text or "").strip()
+            except Exception:
+                pass
+        slides_data.append({"title": title_text, "bullets": bullets, "notes": notes_text, "img": img_bytes})
 
-                img_area_x = left + text_w + 0.3 * inch
-                img_area_w = content_w * 0.38
-                img_area_h = PAGE_H - 2 * MARGIN
+    c = rl_canvas.Canvas(str(pdf_path), pagesize=landscape(A4))
+    total = len(slides_data)
 
-                iw, ih = pil_img.size
-                scale = min(img_area_w / iw, img_area_h / ih)
-                draw_w = iw * scale
-                draw_h = ih * scale
-                draw_x = img_area_x + (img_area_w - draw_w) / 2
-                draw_y = MARGIN + (img_area_h - draw_h) / 2
+    for idx, sd in enumerate(slides_data):
+        is_title = (idx == 0 and not sd["bullets"] and not sd["img"])
 
-                c.drawImage(
-                    ImageReader(out_buf),
-                    draw_x, draw_y, draw_w, draw_h,
-                    preserveAspectRatio=True, mask="auto",
-                )
-            except Exception as e:
-                print(f"DEBUG pdf image error: {e}")
+        if is_title:
+            # Dark background
+            c.setFillColor(C_BG_DARK)
+            c.rect(0, 0, PW, PH, fill=1, stroke=0)
+            # Accent bar
+            bar_y = PH * 0.44
+            c.setFillColor(C_ACCENT)
+            c.rect(M, bar_y, 1.4 * inch, 0.07 * inch, fill=1, stroke=0)
+            # Title
+            title = sd["title"] or "Presentation"
+            wrap_draw(c, title, M, bar_y - 0.2 * inch, PW - 2 * M,
+                      "Helvetica-Bold", 36, C_WHITE, 44, max_lines=3)
+            # Subtitle
+            sub = (sd["bullets"][0] if sd["bullets"] else None) or sd["notes"] or ""
+            if sub:
+                wrap_draw(c, sub, M, bar_y - 0.2 * inch - 3 * 44, PW - 2 * M,
+                          "Helvetica", 17, C_SUBTITLE, 26, max_lines=2)
+        else:
+            has_img = sd["img"] is not None
+            # Light background
+            c.setFillColor(C_SLIDE_BG)
+            c.rect(0, 0, PW, PH, fill=1, stroke=0)
+            # Dark header bar
+            hh = 0.72 * inch
+            c.setFillColor(C_BG_DARK)
+            c.rect(0, PH - hh, PW, hh, fill=1, stroke=0)
+            # Title in header
+            title = sd["title"] or f"Slide {idx + 1}"
+            cpl = int((PW - 2 * M) / (22 * 0.52))
+            short = title if len(title) <= cpl else title[:cpl - 1] + "…"
+            c.setFont("Helvetica-Bold", 22)
+            c.setFillColor(C_WHITE)
+            c.drawString(M, PH - hh + 0.22 * inch, short)
+            # Blue accent strip below header
+            c.setFillColor(C_ACCENT)
+            c.rect(0, PH - hh - 0.05 * inch, PW, 0.05 * inch, fill=1, stroke=0)
 
-        # --- slide number ---
-        slide_num = prs.slides.index(slide) + 1
-        c.setFont("Helvetica", 8)
-        c.setFillColor(colors.HexColor("#475569"))
-        c.drawRightString(PAGE_W - MARGIN, MARGIN - 2, str(slide_num))
+            content_top = PH - hh - 0.05 * inch - 0.28 * inch
+            content_bot = M + (0.22 * inch if sd["notes"] else 0.1 * inch)
+            content_h = content_top - content_bot
+
+            text_w = (PW * 0.56 - M) if has_img else (PW - 2 * M)
+            img_x = PW * 0.58
+            img_w = PW - img_x - M * 0.5
+
+            draw_bullets(c, sd["bullets"], M, content_top,
+                         text_w, 12, C_BODY, C_BULLET, 17)
+
+            if has_img:
+                try:
+                    buf = io.BytesIO(sd["img"])
+                    pil = Image.open(buf)
+                    pil.thumbnail((1400, 1000))
+                    out = io.BytesIO()
+                    fmt = "PNG" if pil.mode in ("RGBA", "LA", "P") else "JPEG"
+                    pil.save(out, fmt)
+                    out.seek(0)
+                    iw, ih = pil.size
+                    scale = min(img_w / iw, content_h / ih)
+                    dw, dh = iw * scale, ih * scale
+                    dx = img_x + (img_w - dw) / 2
+                    dy = content_bot + (content_h - dh) / 2
+                    c.setFillColor(colors.HexColor("#E5E7EB"))
+                    c.roundRect(dx - 4, dy - 4, dw + 8, dh + 8, 4, fill=1, stroke=0)
+                    c.drawImage(ImageReader(out), dx, dy, dw, dh,
+                                preserveAspectRatio=True, mask="auto")
+                except Exception as e:
+                    print(f"DEBUG pdf img error: {e}")
+
+            if sd["notes"]:
+                c.setFillColor(colors.HexColor("#F3F4F6"))
+                c.rect(0, 0, PW, M + 0.1 * inch, fill=1, stroke=0)
+                c.setFont("Helvetica-Oblique", 8)
+                c.setFillColor(C_MUTED)
+                c.drawString(M, 0.14 * inch, sd["notes"][:160].replace("\n", " "))
+
+            c.setFont("Helvetica", 8)
+            c.setFillColor(C_MUTED)
+            c.drawRightString(PW - M * 0.5, 0.14 * inch, f"{idx + 1} / {total}")
 
         c.showPage()
-
     c.save()
-
 
 @app.get("/api/download-pdf/{filename}")
 def download_pdf(filename: str):
